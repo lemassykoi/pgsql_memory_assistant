@@ -22,15 +22,14 @@
 #     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 # );
 
-import re # Import the regex module
+import re
 import uuid
-from autogen import UserProxyAgent, ConversableAgent # Use standard ConversableAgent
+from autogen import UserProxyAgent, ConversableAgent
 from llm_config import config_list
 from prompt import agent_system_message
 from util import generate_user_id
 import streamlit as st
 import psycopg2
-#import traceback # Import traceback for detailed error logging
 
 # Import PostgreSQL configurations from pgsql_config.py
 from pgsql_config import DB_URI
@@ -163,6 +162,59 @@ def persist_message_to_db(session_id, role, content):
             conn.close()
 
 
+def load_messages_from_db(session_id):
+    """Load messages for a given session ID from the PostgreSQL database."""
+    print(f"--- Loading messages for session: {session_id} ---") # ADDED PRINT
+    success, conn, cursor = initialize_postgresql_client()
+    if not success:
+        st.error("Failed to connect to DB to load messages.")
+        return [] # Return empty list if connection fails
+
+    messages = []
+    try:
+        query = """
+        SELECT role, content, created_at
+        FROM messages
+        WHERE session_id = %s
+        ORDER BY created_at;
+        """
+        cursor.execute(query, (session_id,))
+        db_messages = cursor.fetchall()
+
+        for msg in db_messages:
+            # Parse thinking and final answer from loaded content
+            raw_content = msg[1]
+            thinking_match = re.search(r"<think>(.*?)</think>", raw_content, re.DOTALL)
+            thinking_process = thinking_match.group(1).strip() if thinking_match else None
+            final_answer = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+
+            if not final_answer and not thinking_process:
+                 final_answer = raw_content.strip()
+            elif not final_answer and thinking_process:
+                 final_answer = "Thinking process completed, but no final answer was generated."
+
+            messages.append({
+                "role": msg[0],
+                "content": raw_content, # Store raw for parsing during display
+                "thinking": thinking_process,
+                "final_answer": final_answer,
+                "created_at": msg[2]
+            })
+
+        print(f"--- Loaded {len(messages)} messages for session {session_id} ---") # ADDED PRINT
+        return messages
+
+    except Exception as e:
+        print(f"--- Error loading messages from DB: {e} ---") # ADDED PRINT
+        st.error(f"Failed to load messages from DB: {e}")
+        return []
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
 def initialize_session(first_name, last_name):
     """Initialize the session state and PostgreSQL connection."""
     print(f"--- initialize_session called for {first_name} {last_name} ---") # MOVED & UPDATED PRINT
@@ -176,15 +228,13 @@ def initialize_session(first_name, last_name):
         session_id = str(uuid.uuid4())
         st.session_state.zep_session_id = session_id # Keep name for compatibility for now
         st.session_state.zep_user_id = user_id       # Keep name for compatibility for now
-        st.session_state.messages = []               # Store chat history for display
+        st.session_state.messages = []               # Initialize empty list
         st.session_state.first_name = first_name     # Store names for potential use
         st.session_state.last_name = last_name
 
         conn = None
         cursor = None
         try:
-            # Removed Zep fact rating definitions
-
             # Attempt to connect to PostgreSQL and manage user data
             is_connection_successful, conn, cursor = initialize_postgresql_client()
             if is_connection_successful:
@@ -226,6 +276,11 @@ def initialize_session(first_name, last_name):
                 st.sidebar.info(f"Session initialized for {first_name} {last_name}.")
                 st.session_state.chat_initialized = True # Set flag to True on success
                 print("Session initialization complete. Rerunning.") # Added print
+
+                # --- Load existing messages for the new session (should be empty) ---
+                st.session_state.messages = load_messages_from_db(session_id)
+                # --- End Load ---
+
                 st.rerun() # Rerun to update the main interface
 
             else:
@@ -248,6 +303,10 @@ def initialize_session(first_name, last_name):
                 conn.close()
     else:
         print("--- Session already initialized, skipping ---") # ADDED PRINT
+        # --- Load existing messages for the existing session ---
+        session_id = st.session_state.zep_session_id
+        st.session_state.messages = load_messages_from_db(session_id)
+        # --- End Load ---
 
 
 def create_agents():
@@ -263,8 +322,6 @@ def create_agents():
                 name="AssistantAgent", # More descriptive name
                 system_message=agent_system_message,
                 llm_config={"config_list": config_list},
-                # zep_session_id=st.session_state.zep_session_id, # Removed - Not a parameter for standard ConversableAgent
-                # min_fact_rating=0.7, # Removed - Requires Zep backend
                 function_map=None,
                 human_input_mode="NEVER",
                 # is_termination_msg=lambda x: x.get("content", "").rstrip().endswith("TERMINATE"), # Example termination condition
@@ -294,6 +351,7 @@ def create_agents():
         return None, None
 
 
+
 def handle_conversations(agent: ConversableAgent, user: UserProxyAgent, prompt: str):
     """Process user input, generate responses, and persist messages."""
     session_id = st.session_state.zep_session_id
@@ -310,10 +368,23 @@ def handle_conversations(agent: ConversableAgent, user: UserProxyAgent, prompt: 
         # Initiate chat - AutoGen handles the conversation flow internally
         # We clear history=False to maintain context within this specific turn/call
         # The agent's internal history (if configured) handles longer context.
+        # To provide historical context from DB, we need to pass it here.
+        # AutoGen agents have a _oai_messages attribute that stores history.
+        # We can try setting this before initiating chat.
+
+        # Prepare messages in OAI format for AutoGen
+        oai_messages = []
+        for msg in st.session_state.messages:
+            # AutoGen expects 'content' and 'role'
+            oai_messages.append({"content": msg.get("content", ""), "role": msg["role"]})
+
+        # Set the agent's history
+        agent._oai_messages[user] = oai_messages # Set history for the conversation with UserProxy
+
         user.initiate_chat(
             agent,
-            message=prompt,
-            clear_history=False, # Keep history within this call
+            message=prompt, # The current message
+            clear_history=False, # Keep the history we just set
             request_reply=True, # Ensure we get a reply
         )
 

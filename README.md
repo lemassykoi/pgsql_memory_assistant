@@ -2,13 +2,17 @@
 
 We're building an AI Agent with human-like memory which integrates PostgreSQL long-term memory backend with Microsoft's AutoGen framework, enabling agents to retain, recall, and manage contextual memory across conversations—paving the way for more intelligent, personalized, and persistent multi-agent interactions.
 
+
+![Screenshot](https://github.com/lemassykoi/pgsql_memory_assistant/blob/8bc97994b221a731b207c257ff1bf7c7be382b3e/memory_agent_screenshot1.png)
+
+
 We use:
 
 - Local PostgreSQL instance for the memory layer to AI agent
 - Autogen (Agent Orchestration)
 - Ollama as Model Provider
 - Qwen 3 (LLM)
-- Streamlit to wrap the logic in an interactive UI
+- Streamlit to wrap the logic in an interactive UI (thinking process handled)
 
 ## Set Up
 

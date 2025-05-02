@@ -27,7 +27,7 @@ ollama pull qwen3:latest
 ### Install Dependencies
 
 ```bash
-pip install ag2[ollama] streamlit
+pip install ag2[ollama] streamlit psycopg2-binary
 ```
 
 ### Run the Application
